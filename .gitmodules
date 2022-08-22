@@ -1,0 +1,3 @@
+[submodule "gifmeta"]
+	path = gifmeta-py
+	url = https://github.com/a-bison/gifmeta
