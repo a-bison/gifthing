@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "gifthing"
 description = "A small tool that messes with GIF files."
@@ -11,3 +15,6 @@ dependencies = [
 
 [project.scripts]
 gifthing = "gifthing:main"
+
+[tool.setuptools.dynamic]
+version = {attr = "gifthing.__version__"}
