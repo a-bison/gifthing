@@ -1,0 +1,13 @@
+[project]
+name = "gifthing"
+description = "A small tool that messes with GIF files."
+readme = "README.md"
+requires-python = ">=3.6"
+dynamic = ["version"]
+
+dependencies = [
+    "gifmeta @ git+https://github.com/a-bison/gifmeta"
+]
+
+[project.scripts]
+gifthing = "gifthing:main"
