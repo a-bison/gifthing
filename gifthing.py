@@ -56,7 +56,7 @@ def open_and_verify_gifstream(parser: argparse.ArgumentParser, fpath: str) -> Gi
 class ColorGenerator:
     """
     The generator for colors. Takes an input color, and randomly transforms it according to
-    instance configuration. At its core, works by generating random offsets and applying adding them
+    instance configuration. At its core, works by generating random offsets and adding them
     to the input colors.
     """
     def __init__(
