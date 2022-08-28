@@ -11,6 +11,9 @@ from gifmeta.gif import _GifStream as GifStream
 from gifmeta.gif import GifStreamException
 
 
+__version__ = "0.1.0"
+
+
 def add_file_arg(parser: argparse.ArgumentParser) -> None:
     """
     Add a file argument to an argument parser.
@@ -235,6 +238,8 @@ def calc_hold_set(parser: argparse.ArgumentParser, hold_str: str) -> t.Set[int]:
 def prepare_argparser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
 
+    parser.add_argument("--version", "-v", action="store_true", help="Print the current version number.")
+
     mode_parsers = parser.add_subparsers(
         title="mode",
         description="The mode to operate in."
@@ -275,8 +280,14 @@ def main() -> None:
     parser = prepare_argparser()
     args = parser.parse_args()
 
-    random.seed()
+    if args.version:
+        print(__version__)
+        sys.exit(0)
 
+    if not hasattr(args, "func"):
+        parser.error("Mode must be specified.")
+
+    random.seed()
     args.func(parser, args)
 
 
