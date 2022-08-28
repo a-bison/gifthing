@@ -32,6 +32,12 @@ gifthing --version
 
 You should see a version number printed.
 
+## Known Issues
+
+- This program will not work on GIFs with local color tables. To force
+  a GIF to use only 256 colors, you can use [gifsicle](https://www.lcdf.org/gifsicle/):
+  `gifsicle -k 256 input.gif -o output.gif`
+
 ## Examples
 
 Here are some different commands and possible outputs.
