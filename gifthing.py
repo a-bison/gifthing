@@ -1,5 +1,6 @@
 import argparse
 import colorsys
+import enum
 import pathlib
 import itertools
 import sys
@@ -14,11 +15,7 @@ from gifmeta.gif import GifStreamException
 __version__ = "0.1.0"
 
 
-def add_file_arg(parser: argparse.ArgumentParser) -> None:
-    """
-    Add a file argument to an argument parser.
-    """
-    parser.add_argument("file", help="The file to operate on.")
+AnyColorTV = t.TypeVar("AnyColorTV", t.Tuple[int, int, int], t.Tuple[float, float, float])
 
 
 def open_and_verify_gif(parser: argparse.ArgumentParser, fpath: str) -> gifmeta.Gif:
@@ -51,6 +48,11 @@ def open_and_verify_gifstream(parser: argparse.ArgumentParser, fpath: str) -> Gi
         parser.error(f"{path}: not a valid GIF file")
 
     return gifstream
+
+
+class ColorMode(enum.Enum):
+    RGB = enum.auto()
+    HSV = enum.auto()
 
 
 class ColorGenerator:
@@ -171,21 +173,52 @@ def table_float_to_bytes(table: t.Iterable[t.Tuple[float, float, float]]) -> byt
     return bytes((int(255 * x) for x in itertools.chain.from_iterable(table)))
 
 
-def mode_randcolor(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+def table_int_to_bytes(table: t.Iterable[t.Tuple[int, int, int]]) -> bytes:
+    """
+    Convert from gifmeta format colortable (0-255 ints) to bytes for writing back into a GIF.
+    """
+    return bytes(itertools.chain.from_iterable(table))
+
+
+def modify_global_color_table(
+    func: t.Callable[[gifmeta.Gif, GifStream, argparse.ArgumentParser, argparse.Namespace], None]
+) -> t.Callable[[argparse.ArgumentParser, argparse.Namespace], None]:
+    """
+    Decorator that creates a mode function which modifies the global color table.
+
+    Automatically loads and verifies the GIF resource, then passes it into the decorated function.
+    Closes the stream upon completion.
+    """
+    def new_func(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+        # Parse the GIF, and open a stream into it.
+        gif = open_and_verify_gif(parser, args.file)
+        gifstream = open_and_verify_gifstream(parser, args.file)
+
+        # Consume screen descriptor and position the gif stream at the global color table.
+        screen_desc = gifstream.consume_screen_descriptor()
+
+        if not screen_desc.colortable_exists:
+            parser.error(f"{args.file}: global color table is not present")
+
+        # Perform color table transform.
+        func(gif, gifstream, parser, args)
+
+        # done.
+        gifstream.close()
+
+    return new_func
+
+
+@modify_global_color_table
+def mode_randcolor(
+    gif: gifmeta.Gif,
+    gifstream: GifStream,
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace
+) -> None:
     """
     Randomize the color table of a GIF according to various parameters.
     """
-
-    # Parse the GIF, and open a stream into it.
-    gif = open_and_verify_gif(parser, args.file)
-    gifstream = open_and_verify_gifstream(parser, args.file)
-
-    # Consume screen descriptor and position the gif stream at the global color table.
-    screen_desc = gifstream.consume_screen_descriptor()
-
-    if not screen_desc.colortable_exists:
-        parser.error(f"{args.file}: global color table is not present")
-
     # Convert to float 0.0 - 1.0 format.
     float_table = table_int_to_float(gif.colortable)
 
@@ -196,19 +229,46 @@ def mode_randcolor(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         always_use_first_offset=args.constant_offset
     )
 
+    color_mode = color_mode_from_args(parser, args)
+
     # Generate a random color table and write it to the stream.
-    if args.hsv:
+    if color_mode is ColorMode.HSV:
         rand_colortable = gen_rand_hsv_colortable(float_table, generator)
     else:
-        if not args.rgb:
-            print(f"{parser.prog}: warn: color mode not specified, defaulting to --rgb", file=sys.stderr)
-
+        # Only two color modes
         rand_colortable = gen_rand_rgb_colortable(float_table, generator)
 
     gifstream.stream.write(rand_colortable)
 
-    # done.
-    gifstream.close()
+
+def set_color(in_color: AnyColorTV, color_settings: t.Union[t.Mapping[int, float], t.Mapping[int, int]]) -> AnyColorTV:
+    """
+    Set the input color to a new one, based on the instructions in set_colors.
+    """
+    return t.cast(AnyColorTV, tuple([
+        color_settings.get(elem_num, orig_val) for elem_num, orig_val in enumerate(in_color)
+    ]))
+
+
+@modify_global_color_table
+def mode_setcolor(
+    gif: gifmeta.Gif,
+    gifstream: GifStream,
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace
+) -> None:
+    color_settings, color_mode = parse_setcolor_value(parser, args)
+
+    if color_mode is ColorMode.HSV:
+        hsv_tab = table_rgb_to_hsv(table_int_to_float(gif.colortable))
+        new_hsv_tab = [set_color(color, color_settings) for color in hsv_tab]
+
+        out_table = table_float_to_bytes(table_hsv_to_rgb(new_hsv_tab))
+    else:
+        new_rgb_tab = [set_color(color, color_settings) for color in gif.colortable]
+        out_table = table_int_to_bytes(new_rgb_tab)
+
+    gifstream.stream.write(out_table)
 
 
 # Map of characters in --hold string to color element indices.
@@ -219,6 +279,20 @@ CHAR_TO_COLOR_ELEM = {
     "h": 0,
     "s": 1,
     "v": 2
+}
+
+
+NAME_TO_COLOR_ELEM_HSV = {
+    "hue": 0,
+    "saturation": 1,
+    "value": 2
+}
+
+
+NAME_TO_COLOR_ELEM_RGB = {
+    "red": 0,
+    "green": 1,
+    "blue": 2
 }
 
 
@@ -235,6 +309,112 @@ def calc_hold_set(parser: argparse.ArgumentParser, hold_str: str) -> t.Set[int]:
     return {CHAR_TO_COLOR_ELEM[c] for c in charset}
 
 
+def color_mode_from_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> ColorMode:
+    """
+    Convert from --rgb and --hsv flags to a ColorMode enum.
+    """
+    if args.hsv:
+        return ColorMode.HSV
+    else:
+        if not args.rgb:
+            print(f"{parser.prog}: warn: color mode not specified, defaulting to --rgb", file=sys.stderr)
+
+        return ColorMode.RGB
+
+
+def parse_setcolor_value(
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace
+) -> t.Tuple[
+    t.Union[t.Mapping[int, float], t.Mapping[int, int]],
+    ColorMode
+]:
+    """
+    Parse color values and color mode from the color arguments of setcolor.
+    """
+    is_rgb = any((getattr(args, name) is not None for name in NAME_TO_COLOR_ELEM_RGB.keys()))
+    is_hsv = any((getattr(args, name) is not None for name in NAME_TO_COLOR_ELEM_HSV.keys()))
+
+    if is_rgb and is_hsv:
+        parser.error("Must specify only RGB or only HSV values.")
+    elif not (is_rgb or is_hsv):
+        parser.error("Must specify at least one color value.")
+
+    name_to_color_elem = NAME_TO_COLOR_ELEM_HSV if is_hsv else NAME_TO_COLOR_ELEM_RGB
+
+    colors = {
+        elem_num: getattr(args, elem_name) for elem_name, elem_num in name_to_color_elem.items()
+        if getattr(args, elem_name) is not None
+    }
+
+    if is_hsv:
+        if any((color < 0.0 or color > 1.0 for color in colors.values())):
+            parser.error("HSV: All values must be between 0 and 1.")
+
+        return colors, ColorMode.HSV
+    else:
+        if any((color < 0 or color > 255 for color in colors.values())) :
+            parser.error("RGB: All values must be between 0 and 255")
+
+        return colors, ColorMode.RGB
+
+
+def parser_add_file_arg(parser: argparse.ArgumentParser) -> None:
+    """
+    Add a file argument to an argument parser.
+    """
+    parser.add_argument("file", help="The file to operate on.")
+
+
+def parser_add_color_mode_group(parser: argparse.ArgumentParser) -> None:
+    """
+    Add a mutually exclusive group indicating color mode.
+    """
+    color_mode_group = parser.add_mutually_exclusive_group()
+    color_mode_group.add_argument(
+        "--rgb", action="store_true", help="Generate using RGB color space. This is the default."
+    )
+    color_mode_group.add_argument(
+        "--hsv", action="store_true", help="Generate using HSV color space"
+    )
+
+
+def prepare_argparser_randcolor(parser: argparse.ArgumentParser) -> None:
+    parser.set_defaults(func=mode_randcolor)
+
+    parser_add_file_arg(parser)
+    parser_add_color_mode_group(parser)
+
+    parser.add_argument(
+        "--hold", default="", help=(
+            "Hold certain elements of a color constant. For example, if --hold rb is specified, only green (g) "
+            "would be randomized. A similar idea holds for HSV."
+        )
+    )
+    parser.add_argument(
+        "--constant-offset", dest="constant_offset", action="store_true", help=(
+            "Only randomly generate a color value offset, and then apply it to each color, rather than "
+            "fully randomizing everything."
+        )
+    )
+
+
+def prepare_argparser_setcolor(parser: argparse.ArgumentParser) -> None:
+    parser.set_defaults(func=mode_setcolor)
+
+    parser_add_file_arg(parser)
+
+    rgb_group = parser.add_argument_group("RGB", "Set RGB elements. All values must be 0-255.")
+    rgb_group.add_argument("-r", "--red", type=int)
+    rgb_group.add_argument("-g", "--green", type=int)
+    rgb_group.add_argument("-b", "--blue", type=int)
+
+    hsv_group = parser.add_argument_group("HSV", "Set HSV elements. All values must be 0-1.")
+    hsv_group.add_argument("--hue", type=float)
+    hsv_group.add_argument("-s", "--saturation", type=float)
+    hsv_group.add_argument("-v", "--value", type=float)
+
+
 def prepare_argparser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
 
@@ -249,29 +429,13 @@ def prepare_argparser() -> argparse.ArgumentParser:
         "randcolor",
         help="Randomize a GIF's color table."
     )
-    mode_randcolor_parser.set_defaults(func=mode_randcolor)
-    add_file_arg(mode_randcolor_parser)
+    prepare_argparser_randcolor(mode_randcolor_parser)
 
-    color_mode_group = mode_randcolor_parser.add_mutually_exclusive_group()
-    color_mode_group.add_argument(
-        "--rgb", action="store_true", help="Generate using RGB color space. This is the default."
+    mode_setcolor_parser = mode_parsers.add_parser(
+        "setcolor",
+        help="Set elements of all colors in the GIF's color table to the same value. All color values are 0-255."
     )
-    color_mode_group.add_argument(
-        "--hsv", action="store_true", help="Generate using HSV color space"
-    )
-
-    mode_randcolor_parser.add_argument(
-        "--hold", default="", help=(
-            "Hold certain elements of a color constant. For example, if --hold rb is specified, only green (g) "
-            "would be randomized. A similar idea holds for HSV."
-        )
-    )
-    mode_randcolor_parser.add_argument(
-        "--constant-offset", dest="constant_offset", action="store_true", help=(
-            "Only randomly generate a color value offset, and then apply it to each color, rather than "
-            "fully randomizing everything."
-        )
-    )
+    prepare_argparser_setcolor(mode_setcolor_parser)
 
     return parser
 

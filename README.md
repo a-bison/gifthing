@@ -101,3 +101,22 @@ then convert back to RGB.
 <p align="center">
     <img src="examples/lizard_hsv_hold_hv.gif"/>
 </p>
+
+## Compound Examples
+
+`gifthing` may be invoked multiple times with different modes on the same
+image to produce more complex effects.
+
+### Combining `setcolor` and `randcolor`
+
+The following sets the same hue across all colors, then randomizes saturation
+and brightness.
+
+```shell
+gifthing setcolor --hue 0.5 lizard.gif
+gifthing randcolor --hsv --hold h lizard.gif
+```
+
+<p align="center">
+    <img src="examples/lizard_setcolor_h_randcolor_hsv.gif"/>
+</p>
